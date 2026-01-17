@@ -152,16 +152,20 @@ iqlabs.setRpcUrl(RPC_URL);
 // Load keypair
 const keypairPath = process.env.SOLANA_KEYPAIR_PATH || join(homedir(), '.config', 'solana', 'id.json');
 let leaderboard: LeaderboardService | null = null;
+let walletStatus = '';
 
 if (existsSync(keypairPath)) {
   try {
     const secret = JSON.parse(readFileSync(keypairPath, 'utf8'));
     const keypair = Keypair.fromSecretKey(Uint8Array.from(secret));
     leaderboard = new LeaderboardService(connection, keypair, 'iq-snake-game', 'scores');
-    console.log(`Wallet: ${keypair.publicKey.toBase58()}`);
+    walletStatus = `Wallet: ${keypair.publicKey.toBase58()}`;
   } catch (e) {
-    console.warn('Could not load keypair');
+    walletStatus = 'Wallet: Failed to load keypair';
   }
+} else {
+  walletStatus = `Wallet: Not found - score submission disabled
+   Create one with: solana-keygen new`;
 }
 
 // ============================================================================
@@ -215,8 +219,12 @@ app.get('/api/health', (_req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`
-  IQ Snake Game - On-Chain Leaderboard
-  Server: http://localhost:${PORT}
-  RPC: ${RPC_URL}
+╔════════════════════════════════════════════════════════════╗
+║             IQ SNAKE GAME - On-Chain Leaderboard           ║
+╠════════════════════════════════════════════════════════════╣
+║   Open in your browser:  http://localhost:${PORT}          ║
+╠════════════════════════════════════════════════════════════╣
+║                ${walletStatus.padEnd(56)}                  ║
+╚════════════════════════════════════════════════════════════╝
   `);
 });
