@@ -4,6 +4,7 @@ import { dirname, join } from 'path';
 import { Connection, Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import { readFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
+import { createHash } from 'crypto';
 import dotenv from 'dotenv';
 import iqlabs from 'iqlabs-sdk/src';
 import { sendTx } from 'iqlabs-sdk/src/sdk/writer/writer_utils';
@@ -15,202 +16,207 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const app = express();
-app.use(express.json());
-app.use(express.static(join(__dirname, 'public')));
+// ============================================================================
+// Leaderboard Service - handles all on-chain interactions
+// ============================================================================
 
-// Config
-const RPC_URL = process.env.SOLANA_RPC_ENDPOINT || 'https://api.devnet.solana.com';
-const DB_ROOT_ID = 'iq-snake-game';
-const LEADERBOARD_TABLE = 'leaderboard';
+const sha256 = (input: string): Buffer => createHash('sha256').update(input).digest();
 
-// Initialize connection
-const connection = new Connection(RPC_URL, 'confirmed');
-iqlabs.setRpcUrl(RPC_URL);
+class LeaderboardService {
+  readonly connection: Connection;
+  readonly signer: Keypair;
+  readonly dbRootId: Buffer;
+  readonly tableSeed: Buffer;
+  readonly programId: PublicKey;
+  readonly builder: ReturnType<typeof iqlabs.contract.createInstructionBuilder>;
 
-// Load keypair for server-side operations (reading is free, writing needs keypair)
-let serverKeypair = null;
-const keypairPath = process.env.SOLANA_KEYPAIR_PATH || join(homedir(), '.config', 'solana', 'id.json');
-if (existsSync(keypairPath)) {
-  try {
-    const secret = JSON.parse(readFileSync(keypairPath, 'utf8'));
-    serverKeypair = Keypair.fromSecretKey(Uint8Array.from(secret));
-    console.log(`Server wallet: ${serverKeypair.publicKey.toBase58()}`);
-  } catch (e) {
-    console.warn('Could not load keypair, write operations will be disabled');
+  private initialized = false;
+
+  constructor(connection: Connection, signer: Keypair, rootId: string, tableName: string) {
+    this.connection = connection;
+    this.signer = signer;
+    this.dbRootId = sha256(rootId);
+    this.tableSeed = sha256(tableName);
+    this.programId = iqlabs.contract.getProgramId();
+    this.builder = iqlabs.contract.createInstructionBuilder(idl as Idl, this.programId);
   }
-}
 
-// Get leaderboard (read from chain)
-app.get('/api/leaderboard', async (req, res) => {
-  try {
-    const programId = iqlabs.contract.getProgramId();
-    const dbRootId = Buffer.from(DB_ROOT_ID, 'utf8');
-    const dbRoot = iqlabs.contract.getDbRootPda(dbRootId, programId);
-    const tableSeed = iqlabs.utils.toSeedBytes(LEADERBOARD_TABLE);
-    const tablePda = iqlabs.contract.getTablePda(dbRoot, tableSeed, programId);
-
-    const rows = await iqlabs.reader.readTableRows(tablePda, { limit: 100 });
-
-    // Sort by score descending, take top 10
-    const sorted = rows
-      .map(row => ({
-        name: row.name || 'Anonymous',
-        score: parseInt(row.score) || 0,
-        timestamp: row.timestamp || Date.now()
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10);
-
-    res.json({ success: true, leaderboard: sorted });
-  } catch (error) {
-    // Table might not exist yet
-    console.log('Leaderboard fetch error (table may not exist yet):', error.message);
-    res.json({ success: true, leaderboard: [] });
+  private getDbRoot(): PublicKey {
+    return iqlabs.contract.getDbRootPda(this.dbRootId, this.programId);
   }
-});
 
-// Submit score (write to chain)
-app.post('/api/submit-score', async (req, res) => {
-  try {
-    if (!serverKeypair) {
-      return res.status(500).json({ success: false, error: 'Server keypair not configured' });
-    }
-
-    const { name, score } = req.body;
-
-    if (!name || typeof score !== 'number') {
-      return res.status(400).json({ success: false, error: 'Name and score required' });
-    }
-
-    // Write score to on-chain table
-    const dbRootId = Buffer.from(DB_ROOT_ID, 'utf8');
-    const tableSeed = iqlabs.utils.toSeedBytes(LEADERBOARD_TABLE);
-
-    const rowData = JSON.stringify({
-      name: name.slice(0, 20), // Limit name length
-      score: score,
-      timestamp: Date.now()
-    });
-
-    const signature = await iqlabs.writer.writeRow(
-      connection,
-      serverKeypair,
-      dbRootId,
-      tableSeed,
-      rowData
-    );
-
-    console.log(`Score submitted: ${name} - ${score} (tx: ${signature})`);
-
-    res.json({ success: true, signature });
-  } catch (error) {
-    console.error('Submit score error:', error);
-    res.status(500).json({ success: false, error: error.message });
+  private getTable(): PublicKey {
+    return iqlabs.contract.getTablePda(this.getDbRoot(), this.tableSeed, this.programId);
   }
-});
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    rpc: RPC_URL,
-    wallet: serverKeypair ? serverKeypair.publicKey.toBase58() : 'not configured'
-  });
-});
+  async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
 
-// One-time initialization (creates db_root and leaderboard table on-chain)
-app.post('/api/init', async (req, res) => {
-  try {
-    if (!serverKeypair) {
-      return res.status(500).json({ success: false, error: 'Server keypair not configured' });
-    }
+    const dbRoot = this.getDbRoot();
+    const table = this.getTable();
+    const instructionTable = iqlabs.contract.getInstructionTablePda(dbRoot, this.tableSeed, this.programId);
 
-    const programId = iqlabs.contract.getProgramId();
-    const builder = iqlabs.contract.createInstructionBuilder(idl as Idl, programId);
-    const dbRootId = Buffer.from(DB_ROOT_ID, 'utf8');
-    const dbRoot = iqlabs.contract.getDbRootPda(dbRootId, programId);
-    const tableSeed = iqlabs.utils.toSeedBytes(LEADERBOARD_TABLE);
-    const tablePda = iqlabs.contract.getTablePda(dbRoot, tableSeed, programId);
-    const instructionTable = iqlabs.contract.getInstructionTablePda(dbRoot, tableSeed, programId);
-
-    const results: string[] = [];
-
-    // Step 1: Check if db_root exists, create if not
-    const rootInfo = await connection.getAccountInfo(dbRoot);
+    // Create db_root if needed
+    const rootInfo = await this.connection.getAccountInfo(dbRoot);
     if (!rootInfo) {
       console.log('Creating db_root...');
       const ix = iqlabs.contract.initializeDbRootInstruction(
-        builder,
+        this.builder,
         {
           db_root: dbRoot,
-          signer: serverKeypair.publicKey,
+          signer: this.signer.publicKey,
           system_program: SystemProgram.programId,
         },
-        { db_root_id: dbRootId }
+        { db_root_id: this.dbRootId }
       );
-      const sig = await sendTx(connection, serverKeypair, ix);
-      results.push(`db_root created: ${sig}`);
-      console.log(`db_root created: ${sig}`);
-    } else {
-      results.push('db_root already exists');
-      console.log('db_root already exists');
+      await sendTx(this.connection, this.signer, ix);
+      console.log('db_root created');
     }
 
-    // Step 2: Check if table exists, create if not
-    const tableInfo = await connection.getAccountInfo(tablePda);
+    // Create table if needed
+    const tableInfo = await this.connection.getAccountInfo(table);
     if (!tableInfo) {
       console.log('Creating leaderboard table...');
       const ix = iqlabs.contract.createTableInstruction(
-        builder,
+        this.builder,
         {
           db_root: dbRoot,
           receiver: new PublicKey(iqlabs.constants.DEFAULT_WRITE_FEE_RECEIVER),
-          signer: serverKeypair.publicKey,
-          table: tablePda,
+          signer: this.signer.publicKey,
+          table: table,
           instruction_table: instructionTable,
           system_program: SystemProgram.programId,
         },
         {
-          db_root_id: dbRootId,
-          table_seed: Buffer.from(tableSeed),
-          table_name: Buffer.from(LEADERBOARD_TABLE, 'utf8'),
-          column_names: [
-            Buffer.from('name', 'utf8'),
-            Buffer.from('score', 'utf8'),
-            Buffer.from('timestamp', 'utf8'),
-          ],
-          id_col: Buffer.from('timestamp', 'utf8'), // Use timestamp as unique id
+          db_root_id: this.dbRootId,
+          table_seed: this.tableSeed,
+          table_name: Buffer.from('scores', 'utf8'),
+          column_names: ['id', 'name', 'score', 'timestamp'].map(c => Buffer.from(c, 'utf8')),
+          id_col: Buffer.from('id', 'utf8'),
           ext_keys: [],
           gate_mint_opt: null,
-          writers_opt: null, // Anyone can write (server-controlled)
+          writers_opt: null,
         }
       );
-      const sig = await sendTx(connection, serverKeypair, ix);
-      results.push(`leaderboard table created: ${sig}`);
-      console.log(`leaderboard table created: ${sig}`);
-    } else {
-      results.push('leaderboard table already exists');
-      console.log('leaderboard table already exists');
+      await sendTx(this.connection, this.signer, ix);
+      console.log('leaderboard table created');
     }
 
-    res.json({ success: true, results });
-  } catch (error) {
-    console.error('Init error:', error);
+    this.initialized = true;
+  }
+
+  async getScores(limit = 10): Promise<Array<{ name: string; score: number; timestamp: number }>> {
+    try {
+      const rows = await iqlabs.reader.readTableRows(this.getTable(), { limit: 100 });
+      return rows
+        .map(row => ({
+          name: String(row.name || 'Anonymous'),
+          score: parseInt(String(row.score)) || 0,
+          timestamp: parseInt(String(row.timestamp)) || Date.now()
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+
+  async submitScore(name: string, score: number): Promise<string> {
+    await this.ensureInitialized();
+
+    const rowData = JSON.stringify({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: name.slice(0, 20),
+      score,
+      timestamp: Date.now()
+    });
+
+    return iqlabs.writer.writeRow(
+      this.connection,
+      this.signer,
+      this.dbRootId,
+      this.tableSeed,
+      rowData
+    );
+  }
+}
+
+// ============================================================================
+// Server Setup
+// ============================================================================
+
+const RPC_URL = process.env.SOLANA_RPC_ENDPOINT || 'https://api.devnet.solana.com';
+const connection = new Connection(RPC_URL, 'confirmed');
+iqlabs.setRpcUrl(RPC_URL);
+
+// Load keypair
+const keypairPath = process.env.SOLANA_KEYPAIR_PATH || join(homedir(), '.config', 'solana', 'id.json');
+let leaderboard: LeaderboardService | null = null;
+
+if (existsSync(keypairPath)) {
+  try {
+    const secret = JSON.parse(readFileSync(keypairPath, 'utf8'));
+    const keypair = Keypair.fromSecretKey(Uint8Array.from(secret));
+    leaderboard = new LeaderboardService(connection, keypair, 'iq-snake-game', 'scores');
+    console.log(`Wallet: ${keypair.publicKey.toBase58()}`);
+  } catch (e) {
+    console.warn('Could not load keypair');
+  }
+}
+
+// ============================================================================
+// Express Routes
+// ============================================================================
+
+const app = express();
+app.use(express.json());
+app.use(express.static(join(__dirname, 'public')));
+
+app.get('/api/leaderboard', async (_req, res) => {
+  if (!leaderboard) {
+    return res.json({ success: true, leaderboard: [] });
+  }
+  const scores = await leaderboard.getScores();
+  res.json({ success: true, leaderboard: scores });
+});
+
+app.post('/api/submit-score', async (req, res) => {
+  if (!leaderboard) {
+    return res.status(500).json({ success: false, error: 'Server not configured' });
+  }
+
+  const { name, score } = req.body;
+  if (!name || typeof score !== 'number') {
+    return res.status(400).json({ success: false, error: 'Name and score required' });
+  }
+
+  try {
+    const signature = await leaderboard.submitScore(name, score);
+    console.log(`Score: ${name} - ${score}`);
+    res.json({ success: true, signature });
+  } catch (error: any) {
+    console.error('Submit error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    rpc: RPC_URL,
+    wallet: leaderboard ? leaderboard.signer.publicKey.toBase58() : 'not configured'
+  });
+});
+
+// ============================================================================
+// Start Server
+// ============================================================================
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`
-╔════════════════════════════════════════════════════════════╗
-║                    IQ SNAKE GAME                           ║
-║                On-Chain Leaderboard                        ║
-╠════════════════════════════════════════════════════════════╣
-║  Server running at: http://localhost:${PORT}                  ║
-║  RPC: ${RPC_URL.slice(0, 45)}...
-║  DB Root: ${DB_ROOT_ID}
-╚════════════════════════════════════════════════════════════╝
+  IQ Snake Game - On-Chain Leaderboard
+  Server: http://localhost:${PORT}
+  RPC: ${RPC_URL}
   `);
 });
