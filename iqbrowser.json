@@ -1,9 +1,9 @@
 {
-  "name": "snake",
+  "name": "snake-game",
   "version": "1.0.0",
-  "description": "Classic Snake Game with On-Chain Leaderboard",
-  "root": "iq-games",
+  "root": "iq-snake-game",
   "runtime": "node",
   "install": "npm install",
-  "start": "npm start"
+  "start": "npm start",
+  "description": "Classic Snake Game with On-Chain Leaderboard"
 }
