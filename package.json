@@ -1,0 +1,24 @@
+{
+  "name": "iq-snake-game",
+  "version": "1.0.0",
+  "description": "Classic Snake Game with On-Chain Leaderboard",
+  "type": "module",
+  "main": "server.ts",
+  "scripts": {
+    "start": "tsx server.ts",
+    "dev": "tsx server.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/web3.js": "^1.98.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "iqlabs-sdk": "file:../IQLabsBackendSdk"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IQ Snake - On-Chain Leaderboard</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0a0a0a;
+      color: #00ff00;
+      font-family: 'Courier New', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      text-shadow: 0 0 10px #00ff00;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: #888;
+      margin-bottom: 20px;
+      font-size: 0.9rem;
+    }
+
+    .game-container {
+      display: flex;
+      gap: 30px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .game-area {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #gameCanvas {
+      border: 3px solid #00ff00;
+      box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+      background: #111;
+    }
+
+    .score-display {
+      margin-top: 15px;
+      font-size: 1.5rem;
+      text-shadow: 0 0 5px #00ff00;
+    }
+
+    .controls {
+      margin-top: 15px;
+      color: #666;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    .leaderboard {
+      background: #111;
+      border: 2px solid #00ff00;
+      padding: 20px;
+      min-width: 280px;
+      box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
+    }
+
+    .leaderboard h2 {
+      text-align: center;
+      margin-bottom: 15px;
+      font-size: 1.3rem;
+      border-bottom: 1px solid #333;
+      padding-bottom: 10px;
+    }
+
+    .leaderboard-entry {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 5px;
+      border-bottom: 1px solid #222;
+    }
+
+    .leaderboard-entry:nth-child(2) {
+      color: #ffd700;
+    }
+
+    .leaderboard-entry:nth-child(3) {
+      color: #c0c0c0;
+    }
+
+    .leaderboard-entry:nth-child(4) {
+      color: #cd7f32;
+    }
+
+    .leaderboard-entry .rank {
+      width: 30px;
+    }
+
+    .leaderboard-entry .name {
+      flex: 1;
+      margin: 0 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .leaderboard-entry .score {
+      font-weight: bold;
+    }
+
+
+    .game-over-modal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #111;
+      border: 3px solid #00ff00;
+      padding: 30px;
+      text-align: center;
+      z-index: 100;
+      box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
+    }
+
+    .game-over-modal.show {
+      display: block;
+    }
+
+    .game-over-modal h2 {
+      color: #ff0000;
+      margin-bottom: 15px;
+    }
+
+    .game-over-modal .final-score {
+      font-size: 2rem;
+      margin-bottom: 20px;
+    }
+
+    .game-over-modal input {
+      background: #222;
+      border: 1px solid #00ff00;
+      color: #00ff00;
+      padding: 10px 15px;
+      font-family: inherit;
+      font-size: 1rem;
+      width: 200px;
+      margin-bottom: 15px;
+    }
+
+    .game-over-modal input:focus {
+      outline: none;
+      box-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+    }
+
+    .game-over-modal button {
+      background: #00ff00;
+      color: #000;
+      border: none;
+      padding: 12px 25px;
+      font-family: inherit;
+      font-size: 1rem;
+      cursor: pointer;
+      margin: 5px;
+      font-weight: bold;
+    }
+
+    .game-over-modal button:hover {
+      background: #00cc00;
+    }
+
+    .game-over-modal button.secondary {
+      background: #333;
+      color: #00ff00;
+      border: 1px solid #00ff00;
+    }
+
+    .overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 50;
+    }
+
+    .overlay.show {
+      display: block;
+    }
+
+    .status-message {
+      margin-top: 10px;
+      color: #888;
+      font-size: 0.85rem;
+      min-height: 20px;
+    }
+
+    .loading {
+      color: #ffff00;
+    }
+
+    .success {
+      color: #00ff00;
+    }
+
+    .error {
+      color: #ff0000;
+    }
+
+    .start-screen {
+      text-align: center;
+      padding: 50px;
+    }
+
+    .start-screen button {
+      background: #00ff00;
+      color: #000;
+      border: none;
+      padding: 15px 40px;
+      font-family: inherit;
+      font-size: 1.2rem;
+      cursor: pointer;
+      font-weight: bold;
+      margin-top: 20px;
+    }
+
+    .powered-by {
+      margin-top: 30px;
+      color: #444;
+      font-size: 0.8rem;
+    }
+
+    .powered-by a {
+      color: #00ff00;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>IQ SNAKE</h1>
+  <p class="subtitle">Classic Snake with On-Chain Leaderboard</p>
+
+  <div class="game-container">
+    <div class="game-area">
+      <canvas id="gameCanvas" width="400" height="400"></canvas>
+      <div class="score-display">Score: <span id="currentScore">0</span></div>
+      <div class="controls">
+        Arrow Keys or WASD to move | Space to pause
+      </div>
+    </div>
+
+    <div class="leaderboard">
+      <h2>ON-CHAIN LEADERBOARD</h2>
+      <div id="leaderboardList">
+        <div class="leaderboard-entry">
+          <span class="rank">-</span>
+          <span class="name">Loading...</span>
+          <span class="score">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay"></div>
+
+  <div class="game-over-modal" id="gameOverModal">
+    <h2>GAME OVER</h2>
+    <div class="final-score">Score: <span id="finalScore">0</span></div>
+    <input type="text" id="playerName" placeholder="Enter your name" maxlength="20">
+    <div>
+      <button onclick="submitScore()">Submit to Chain</button>
+      <button class="secondary" onclick="restartGame()">Play Again</button>
+    </div>
+    <div class="status-message" id="submitStatus"></div>
+  </div>
+
+  <p class="powered-by">Powered by <a href="https://x.com/IQLabsOfficial" target="_blank">IQ Labs</a></p>
+
+  <script>
+    // Game constants
+    const GRID_SIZE = 20;
+    const CANVAS_SIZE = 400;
+    const CELL_SIZE = CANVAS_SIZE / GRID_SIZE;
+    const INITIAL_SPEED = 150;
+    const SPEED_INCREASE = 5;
+    const MIN_SPEED = 50;
+
+    // Game state
+    let snake = [];
+    let food = { x: 0, y: 0 };
+    let direction = { x: 1, y: 0 };
+    let nextDirection = { x: 1, y: 0 };
+    let score = 0;
+    let gameLoop = null;
+    let speed = INITIAL_SPEED;
+    let isPaused = false;
+    let isGameOver = false;
+    let gameStarted = false;
+
+    // Canvas setup
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Initialize game
+    function initGame() {
+      snake = [
+        { x: 10, y: 10 },
+        { x: 9, y: 10 },
+        { x: 8, y: 10 }
+      ];
+      direction = { x: 1, y: 0 };
+      nextDirection = { x: 1, y: 0 };
+      score = 0;
+      speed = INITIAL_SPEED;
+      isPaused = false;
+      isGameOver = false;
+      updateScore();
+      spawnFood();
+
+      if (gameLoop) clearInterval(gameLoop);
+      gameLoop = setInterval(gameStep, speed);
+    }
+
+    // Spawn food at random position
+    function spawnFood() {
+      do {
+        food.x = Math.floor(Math.random() * GRID_SIZE);
+        food.y = Math.floor(Math.random() * GRID_SIZE);
+      } while (snake.some(segment => segment.x === food.x && segment.y === food.y));
+    }
+
+    // Game step
+    function gameStep() {
+      if (isPaused || isGameOver || !gameStarted) return;
+
+      direction = { ...nextDirection };
+
+      // Calculate new head position
+      const head = {
+        x: snake[0].x + direction.x,
+        y: snake[0].y + direction.y
+      };
+
+      // Check wall collision
+      if (head.x < 0 || head.x >= GRID_SIZE || head.y < 0 || head.y >= GRID_SIZE) {
+        gameOver();
+        return;
+      }
+
+      // Check self collision
+      if (snake.some(segment => segment.x === head.x && segment.y === head.y)) {
+        gameOver();
+        return;
+      }
+
+      snake.unshift(head);
+
+      // Check food collision
+      if (head.x === food.x && head.y === food.y) {
+        score += 10;
+        updateScore();
+        spawnFood();
+
+        // Speed up
+        if (speed > MIN_SPEED) {
+          speed -= SPEED_INCREASE;
+          clearInterval(gameLoop);
+          gameLoop = setInterval(gameStep, speed);
+        }
+      } else {
+        snake.pop();
+      }
+
+      draw();
+    }
+
+    // Draw game
+    function draw() {
+      // Clear canvas
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+      // Draw grid (subtle)
+      ctx.strokeStyle = '#1a1a1a';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= GRID_SIZE; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * CELL_SIZE, 0);
+        ctx.lineTo(i * CELL_SIZE, CANVAS_SIZE);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, i * CELL_SIZE);
+        ctx.lineTo(CANVAS_SIZE, i * CELL_SIZE);
+        ctx.stroke();
+      }
+
+      // Draw snake
+      snake.forEach((segment, index) => {
+        const brightness = Math.max(100, 255 - index * 10);
+        ctx.fillStyle = `rgb(0, ${brightness}, 0)`;
+        ctx.fillRect(
+          segment.x * CELL_SIZE + 1,
+          segment.y * CELL_SIZE + 1,
+          CELL_SIZE - 2,
+          CELL_SIZE - 2
+        );
+
+        // Head highlight
+        if (index === 0) {
+          ctx.fillStyle = '#00ff00';
+          ctx.fillRect(
+            segment.x * CELL_SIZE + 3,
+            segment.y * CELL_SIZE + 3,
+            CELL_SIZE - 6,
+            CELL_SIZE - 6
+          );
+        }
+      });
+
+      // Draw food
+      ctx.fillStyle = '#ff0000';
+      ctx.beginPath();
+      ctx.arc(
+        food.x * CELL_SIZE + CELL_SIZE / 2,
+        food.y * CELL_SIZE + CELL_SIZE / 2,
+        CELL_SIZE / 2 - 2,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+
+      // Start screen overlay
+      if (!gameStarted) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        ctx.fillStyle = '#00ff00';
+        ctx.font = '24px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('IQ SNAKE', CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 40);
+        ctx.font = '16px Courier New';
+        ctx.fillText('Press SPACE or Click to Start', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 10);
+        ctx.fillStyle = '#666';
+        ctx.font = '12px Courier New';
+        ctx.fillText('Arrow Keys / WASD to move', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 50);
+        return;
+      }
+
+      // Pause overlay
+      if (isPaused) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        ctx.fillStyle = '#00ff00';
+        ctx.font = '30px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('PAUSED', CANVAS_SIZE / 2, CANVAS_SIZE / 2);
+      }
+    }
+
+    // Update score display
+    function updateScore() {
+      document.getElementById('currentScore').textContent = score;
+    }
+
+    // Game over
+    function gameOver() {
+      isGameOver = true;
+      clearInterval(gameLoop);
+
+      document.getElementById('finalScore').textContent = score;
+      document.getElementById('overlay').classList.add('show');
+      document.getElementById('gameOverModal').classList.add('show');
+      document.getElementById('submitStatus').textContent = '';
+      document.getElementById('playerName').value = '';
+      document.getElementById('playerName').focus();
+    }
+
+    // Submit score to blockchain
+    async function submitScore() {
+      const name = document.getElementById('playerName').value.trim() || 'Anonymous';
+      const statusEl = document.getElementById('submitStatus');
+
+      statusEl.textContent = 'Submitting to Solana...';
+      statusEl.className = 'status-message loading';
+
+      try {
+        const response = await fetch('/api/submit-score', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, score })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          statusEl.textContent = 'Score saved on-chain!';
+          statusEl.className = 'status-message success';
+          setTimeout(() => {
+            loadLeaderboard();
+            restartGame();
+          }, 1500);
+        } else {
+          throw new Error(data.error || 'Failed to submit');
+        }
+      } catch (error) {
+        statusEl.textContent = 'Error: ' + error.message;
+        statusEl.className = 'status-message error';
+      }
+    }
+
+    // Start game (from start screen)
+    function startGame() {
+      if (gameStarted) return;
+      gameStarted = true;
+      initGame();
+    }
+
+    // Restart game
+    function restartGame() {
+      document.getElementById('overlay').classList.remove('show');
+      document.getElementById('gameOverModal').classList.remove('show');
+      gameStarted = true;
+      initGame();
+    }
+
+    // Load leaderboard from blockchain
+    async function loadLeaderboard() {
+      const listEl = document.getElementById('leaderboardList');
+
+      try {
+        const response = await fetch('/api/leaderboard');
+        const data = await response.json();
+
+        if (data.success && data.leaderboard.length > 0) {
+          listEl.innerHTML = data.leaderboard.map((entry, index) => `
+            <div class="leaderboard-entry">
+              <span class="rank">#${index + 1}</span>
+              <span class="name">${escapeHtml(entry.name)}</span>
+              <span class="score">${entry.score}</span>
+            </div>
+          `).join('');
+        } else {
+          listEl.innerHTML = `
+            <div class="leaderboard-entry">
+              <span class="rank">-</span>
+              <span class="name">No scores yet</span>
+              <span class="score">-</span>
+            </div>
+          `;
+        }
+      } catch (error) {
+        console.error('Failed to load leaderboard:', error);
+        listEl.innerHTML = `
+          <div class="leaderboard-entry">
+            <span class="rank">!</span>
+            <span class="name">Failed to load</span>
+            <span class="score">-</span>
+          </div>
+        `;
+      }
+    }
+
+    // Escape HTML for safety
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Keyboard controls
+    document.addEventListener('keydown', (e) => {
+      if (isGameOver) {
+        if (e.key === 'Enter') submitScore();
+        return;
+      }
+
+      // Start game on space if not started
+      if (!gameStarted) {
+        if (e.key === ' ') {
+          e.preventDefault();
+          startGame();
+        }
+        return;
+      }
+
+      switch (e.key) {
+        case 'ArrowUp':
+        case 'w':
+        case 'W':
+          if (direction.y !== 1) nextDirection = { x: 0, y: -1 };
+          break;
+        case 'ArrowDown':
+        case 's':
+        case 'S':
+          if (direction.y !== -1) nextDirection = { x: 0, y: 1 };
+          break;
+        case 'ArrowLeft':
+        case 'a':
+        case 'A':
+          if (direction.x !== 1) nextDirection = { x: -1, y: 0 };
+          break;
+        case 'ArrowRight':
+        case 'd':
+        case 'D':
+          if (direction.x !== -1) nextDirection = { x: 1, y: 0 };
+          break;
+        case ' ':
+          e.preventDefault();
+          if (!isGameOver) {
+            isPaused = !isPaused;
+            draw();
+          }
+          break;
+      }
+    });
+
+    // Click to start
+    canvas.addEventListener('click', () => {
+      if (!gameStarted && !isGameOver) {
+        startGame();
+      }
+    });
+
+    // Initialize - show start screen, don't auto-start
+    loadLeaderboard();
+    // Set up initial snake position for display
+    snake = [
+      { x: 10, y: 10 },
+      { x: 9, y: 10 },
+      { x: 8, y: 10 }
+    ];
+    spawnFood();
+    draw();
+
+    // Refresh leaderboard periodically
+    setInterval(loadLeaderboard, 30000);
+  </script>
+</body>
+</html>
