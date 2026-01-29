@@ -1,3 +1,5 @@
 node_modules/
 .env
 *.log
+.iqbrowser-upload-cache.json
+/dist
