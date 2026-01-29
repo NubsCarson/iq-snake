@@ -1,13 +1,12 @@
 import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { Connection, Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
 import { readFileSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
 import dotenv from 'dotenv';
-import iqlabs from 'iqlabs-sdk/src';
-import { sendTx } from 'iqlabs-sdk/src/sdk/writer/writer_utils';
+import iqlabs from 'iqlabs-sdk';
 import type { Idl } from '@coral-xyz/anchor';
 import idl from 'iqlabs-sdk/idl/code_in.json';
 
@@ -69,7 +68,7 @@ class LeaderboardService {
         },
         { db_root_id: this.dbRootId }
       );
-      await sendTx(this.connection, this.signer, ix);
+      await sendAndConfirmTransaction(this.connection, new Transaction().add(ix), [this.signer]);
       console.log('db_root created');
     }
 
@@ -98,7 +97,7 @@ class LeaderboardService {
           writers_opt: null,
         }
       );
-      await sendTx(this.connection, this.signer, ix);
+      await sendAndConfirmTransaction(this.connection, new Transaction().add(ix), [this.signer]);
       console.log('leaderboard table created');
     }
 

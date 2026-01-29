@@ -1,6 +1,6 @@
 {
   "name": "snake-game",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "description": "Classic Snake Game with On-Chain Leaderboard using IQ Labs SDK",
   "root": "iq-snake-game",
   "runtime": "node",
