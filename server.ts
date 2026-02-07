@@ -144,7 +144,7 @@ class LeaderboardService {
 // Server Setup
 // ============================================================================
 
-const RPC_URL = process.env.SOLANA_RPC_ENDPOINT || 'https://api.devnet.solana.com';
+const RPC_URL = process.env.SOLANA_RPC_ENDPOINT || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_URL, 'confirmed');
 iqlabs.setRpcUrl(RPC_URL);
 
