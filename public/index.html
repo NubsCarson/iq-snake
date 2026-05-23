@@ -247,6 +247,9 @@
   </style>
 </head>
 <body>
+  <div id="profileBanner" style="display:none;background:#ffb703;color:#000;padding:12px 16px;text-align:center;font-weight:bold;border-bottom:2px solid #000;">
+    Viewing profile: <span id="profileWallet"></span> — their scores are highlighted below.
+  </div>
   <h1>IQ SNAKE</h1>
   <p class="subtitle">Classic Snake with On-Chain Leaderboard</p>
 
@@ -282,9 +285,253 @@
       <button class="secondary" onclick="restartGame()">Play Again</button>
     </div>
     <div class="status-message" id="submitStatus"></div>
+    <div id="profileCard" style="display:none;margin-top:18px;padding-top:18px;border-top:1px solid #333;">
+      <img id="profilePic" alt="" style="width:64px;height:64px;border-radius:50%;border:2px solid #00ff00;object-fit:cover;background:#000;display:none;margin:0 auto 10px;">
+      <div id="profileName" style="font-size:1.1rem;margin-bottom:4px;"></div>
+      <div id="profileWalletShort" style="color:#888;font-size:0.8rem;margin-bottom:4px;font-family:monospace;"></div>
+      <div id="profileScoreLine" style="color:#00ff00;font-size:1rem;"></div>
+    </div>
   </div>
 
   <p class="powered-by">Powered by <a href="https://x.com/IQLabsOfficial" target="_blank">IQ Labs</a></p>
+
+  <!--
+    Client-side chain writes: on Game Over the browser uses Phantom to
+    sign an iqlabs writer.writeRow tx directly. No backend.
+  -->
+  <script type="module">
+    import { Connection, PublicKey } from "https://esm.sh/@solana/web3.js@1.98.0";
+    import { Buffer } from "https://esm.sh/buffer@6.0.3";
+    import iqlabs from "https://esm.sh/@iqlabs-official/solana-sdk@0.1.21";
+
+    // Browser-scoped Helius key (Allowed Origins whitelist enforces use)
+    const RPC_URL = "https://mainnet.helius-rpc.com/?api-key=fbb113ce-eeb4-4277-8c44-7153632d175a";
+    const DB_ROOT_ID = "iq-snake-game";
+    const TABLE_SEED = "scores";
+    // IQLabs contract program id — same one iqprofilenet reads profile PDAs from.
+    const PROGRAM_ID = new PublicKey("9KLLchQVJpGkw4jPuUmnvqESdR7mtNCYr3qS4iQLabs");
+    const GATEWAY_URL = "https://gateway.iqlabs.dev";
+
+    const connection = new Connection(RPC_URL, "confirmed");
+    iqlabs.setRpcUrl(RPC_URL);
+
+    // Ported from iqprofilenet/src/lib/profile/profile.ts — decode the
+    // metadata tail from a user PDA: [8 disc][32 owner][u32 dataLen][data][u32 metaLen][meta]
+    function extractUserMetadata(info) {
+      if (!info?.data) return "";
+      try {
+        const data = Buffer.from(info.data);
+        let offset = 8 + 32;
+        if (offset + 4 > data.length) return "";
+        const dataLen = data.readUInt32LE(offset);
+        offset += 4 + dataLen;
+        if (offset + 4 > data.length) return "";
+        const metadataLen = data.readUInt32LE(offset);
+        offset += 4;
+        if (metadataLen <= 0 || offset + metadataLen > data.length) return "";
+        return data.slice(offset, offset + metadataLen).toString("utf8").trim();
+      } catch {
+        return "";
+      }
+    }
+
+    async function fetchTxDataViaGateway(txId) {
+      try {
+        const res = await fetch(`${GATEWAY_URL}/data/${txId}`, { cache: "force-cache" });
+        if (!res.ok) return null;
+        const env = await res.json();
+        const data = env?.data;
+        if (!data || data.startsWith("[unable")) return null;
+        return data;
+      } catch {
+        return null;
+      }
+    }
+
+    async function parseMetadata(raw) {
+      if (!raw || raw.length <= 2) return null;
+      try {
+        const isBase58TxId = raw.length <= 100 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(raw);
+        if (isBase58TxId) {
+          const fromGateway = await fetchTxDataViaGateway(raw);
+          if (fromGateway) return JSON.parse(fromGateway);
+          const result = await iqlabs.reader.readCodeIn(raw);
+          if (!result?.data || result.data.startsWith("[unable")) return null;
+          return JSON.parse(result.data);
+        }
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+
+    async function fetchProfile(walletAddress) {
+      try {
+        const owner = new PublicKey(walletAddress);
+        const userPda = iqlabs.contract.getUserPda(owner, PROGRAM_ID);
+        const info = await connection.getAccountInfo(userPda);
+        const raw = extractUserMetadata(info);
+        return raw ? await parseMetadata(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    // Both DbRoot and the scores table were created with raw-utf8 seeds, so
+    // we keep the buffers as-is everywhere (see fix history in server.ts).
+    const dbRootSeed = new TextEncoder().encode(DB_ROOT_ID);
+    const tableSeedBytes = new TextEncoder().encode(TABLE_SEED);
+    const tablePda = iqlabs.contract.getTablePda(
+      iqlabs.contract.getDbRootPda(dbRootSeed),
+      tableSeedBytes,
+    );
+
+    function phantomSigner() {
+      const w = window.solana;
+      if (!w?.isPhantom) throw new Error("Phantom wallet not found. Install it and retry.");
+      return {
+        publicKey: w.publicKey,
+        signTransaction: (tx) => w.signTransaction(tx),
+        signAllTransactions: (txs) => w.signAllTransactions(txs),
+      };
+    }
+
+    window.submitScore = async function submitScore() {
+      const name = document.getElementById("playerName").value.trim() || "Anonymous";
+      const statusEl = document.getElementById("submitStatus");
+      statusEl.textContent = "Connecting wallet...";
+      statusEl.className = "status-message loading";
+
+      try {
+        if (!window.solana?.isPhantom) throw new Error("Phantom wallet required");
+        await window.solana.connect();
+        const signer = phantomSigner();
+
+        statusEl.textContent = "Signing and submitting to Solana...";
+        const rowData = JSON.stringify({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name: name.slice(0, 20),
+          score,
+          timestamp: Date.now(),
+        });
+        const sig = await iqlabs.writer.writeRow(
+          connection, signer, dbRootSeed, tableSeedBytes, rowData,
+        );
+        statusEl.textContent = `Score saved on-chain! tx: ${sig.slice(0, 8)}…`;
+        statusEl.className = "status-message success";
+
+        // Show profile card (pic + on-chain name + wallet + score) for the
+        // signer. parseMetadata may hit the gateway, so await before refresh.
+        const walletStr = signer.publicKey.toBase58();
+        const profile = await fetchProfile(walletStr);
+        renderProfileCard({ wallet: walletStr, score, profile });
+
+        setTimeout(() => { loadLeaderboard(); restartGame(); }, 4000);
+      } catch (error) {
+        statusEl.textContent = "Error: " + (error?.message ?? String(error));
+        statusEl.className = "status-message error";
+      }
+    };
+
+    const PROFILE_WALLET = new URLSearchParams(location.search).get("profile");
+    if (PROFILE_WALLET) {
+      const banner = document.getElementById("profileBanner");
+      const walletSpan = document.getElementById("profileWallet");
+      walletSpan.textContent =
+        PROFILE_WALLET.length > 12 ? `${PROFILE_WALLET.slice(0, 4)}…${PROFILE_WALLET.slice(-4)}` : PROFILE_WALLET;
+      banner.style.display = "block";
+    }
+
+    window.loadLeaderboard = async function loadLeaderboard() {
+      const listEl = document.getElementById("leaderboardList");
+      try {
+        const rows = await iqlabs.reader.readTableRows(tablePda, { limit: 100 });
+        const scores = (rows || [])
+          .map((r) => ({
+            name: String(r.name ?? "Anonymous"),
+            score: parseInt(String(r.score ?? 0), 10) || 0,
+            wallet: r.__signer ?? null,
+          }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 10);
+
+        if (scores.length === 0) {
+          listEl.innerHTML = `
+            <div class="leaderboard-entry">
+              <span class="rank">-</span>
+              <span class="name">No scores yet</span>
+              <span class="score">-</span>
+            </div>`;
+          return;
+        }
+        listEl.innerHTML = scores.map((e, i) => {
+          const mine = PROFILE_WALLET && e.wallet === PROFILE_WALLET;
+          const style = mine ? ' style="background:#ffb703;color:#000;"' : "";
+          // TODO(future): make each entry clickable → open profile.iqlabs.dev/{wallet} in a new tab.
+          // Sketch:
+          //   const href = e.wallet ? `https://profile.iqlabs.dev/${e.wallet}` : null;
+          //   wrap the entry in <a target="_blank" rel="noopener noreferrer" href="${href}"> when href exists.
+          return `
+            <div class="leaderboard-entry"${style}>
+              <span class="rank">#${i + 1}</span>
+              <span class="name">${escapeHtml(e.name)}</span>
+              <span class="score">${e.score}</span>
+            </div>`;
+        }).join("");
+      } catch (error) {
+        console.error("leaderboard load failed", error);
+        listEl.innerHTML = `
+          <div class="leaderboard-entry">
+            <span class="rank">!</span>
+            <span class="name">Failed to load</span>
+            <span class="score">-</span>
+          </div>`;
+      }
+    };
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    window.escapeHtml = escapeHtml;
+
+    // profilePicture may be a URL or a txId (same dual-form as iqprofilenet).
+    // Short base58 → gateway, otherwise use the string as-is.
+    function resolveProfilePicture(pic) {
+      if (!pic) return null;
+      const isBase58TxId = pic.length <= 100 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(pic);
+      return isBase58TxId ? `${GATEWAY_URL}/data/${pic}` : pic;
+    }
+
+    function renderProfileCard({ wallet, score, profile }) {
+      const card = document.getElementById("profileCard");
+      const pic = document.getElementById("profilePic");
+      const nameEl = document.getElementById("profileName");
+      const walletEl = document.getElementById("profileWalletShort");
+      const scoreEl = document.getElementById("profileScoreLine");
+      const picUrl = resolveProfilePicture(profile?.profilePicture);
+      if (picUrl) {
+        pic.src = picUrl;
+        pic.style.display = "block";
+      } else {
+        pic.style.display = "none";
+        pic.removeAttribute("src");
+      }
+      nameEl.textContent = profile?.name || "(no profile)";
+      walletEl.textContent = `${wallet.slice(0, 4)}…${wallet.slice(-4)}`;
+      scoreEl.textContent = `Score: ${score}`;
+      card.style.display = "block";
+    }
+    window.renderProfileCard = renderProfileCard;
+
+    // Kick off initial leaderboard load once the page is ready.
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => window.loadLeaderboard());
+    } else {
+      window.loadLeaderboard();
+    }
+  </script>
 
   <script>
     // Game constants
@@ -484,39 +731,6 @@
       document.getElementById('playerName').focus();
     }
 
-    // Submit score to blockchain
-    async function submitScore() {
-      const name = document.getElementById('playerName').value.trim() || 'Anonymous';
-      const statusEl = document.getElementById('submitStatus');
-
-      statusEl.textContent = 'Submitting to Solana...';
-      statusEl.className = 'status-message loading';
-
-      try {
-        const response = await fetch('/api/submit-score', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, score })
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-          statusEl.textContent = 'Score saved on-chain!';
-          statusEl.className = 'status-message success';
-          setTimeout(() => {
-            loadLeaderboard();
-            restartGame();
-          }, 1500);
-        } else {
-          throw new Error(data.error || 'Failed to submit');
-        }
-      } catch (error) {
-        statusEl.textContent = 'Error: ' + error.message;
-        statusEl.className = 'status-message error';
-      }
-    }
-
     // Start game (from start screen)
     function startGame() {
       if (gameStarted) return;
@@ -528,52 +742,10 @@
     function restartGame() {
       document.getElementById('overlay').classList.remove('show');
       document.getElementById('gameOverModal').classList.remove('show');
+      const card = document.getElementById('profileCard');
+      if (card) card.style.display = 'none';
       gameStarted = true;
       initGame();
-    }
-
-    // Load leaderboard from blockchain
-    async function loadLeaderboard() {
-      const listEl = document.getElementById('leaderboardList');
-
-      try {
-        const response = await fetch('/api/leaderboard');
-        const data = await response.json();
-
-        if (data.success && data.leaderboard.length > 0) {
-          listEl.innerHTML = data.leaderboard.map((entry, index) => `
-            <div class="leaderboard-entry">
-              <span class="rank">#${index + 1}</span>
-              <span class="name">${escapeHtml(entry.name)}</span>
-              <span class="score">${entry.score}</span>
-            </div>
-          `).join('');
-        } else {
-          listEl.innerHTML = `
-            <div class="leaderboard-entry">
-              <span class="rank">-</span>
-              <span class="name">No scores yet</span>
-              <span class="score">-</span>
-            </div>
-          `;
-        }
-      } catch (error) {
-        console.error('Failed to load leaderboard:', error);
-        listEl.innerHTML = `
-          <div class="leaderboard-entry">
-            <span class="rank">!</span>
-            <span class="name">Failed to load</span>
-            <span class="score">-</span>
-          </div>
-        `;
-      }
-    }
-
-    // Escape HTML for safety
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
     }
 
     // Keyboard controls
@@ -630,9 +802,8 @@
       }
     });
 
-    // Initialize - show start screen, don't auto-start
-    loadLeaderboard();
-    // Set up initial snake position for display
+    // Initialize - show start screen, don't auto-start.
+    // Leaderboard is loaded by the module script above (and refreshes after submit).
     snake = [
       { x: 10, y: 10 },
       { x: 9, y: 10 },
@@ -641,8 +812,8 @@
     spawnFood();
     draw();
 
-    // Refresh leaderboard periodically
-    setInterval(loadLeaderboard, 30000);
+    // Refresh leaderboard periodically (delegates to the module-defined global)
+    setInterval(() => window.loadLeaderboard && window.loadLeaderboard(), 30000);
   </script>
 </body>
 </html>
